@@ -1,13 +1,26 @@
 package com.digswim.app.data.remote
 
+import android.content.Context
 import android.util.Log
 import com.digswim.app.data.SwimRepository
 import com.digswim.app.data.local.UserPreferences
 import com.digswim.app.data.remote.model.GarminActivityDto
 import com.digswim.app.model.*
+import com.google.gson.Gson
+import com.google.gson.GsonBuilder
+import com.google.gson.TypeAdapter
+import com.google.gson.reflect.TypeToken
+import com.google.gson.stream.JsonReader
+import com.google.gson.stream.JsonWriter
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileReader
+import java.io.FileWriter
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.YearMonth
@@ -17,6 +30,7 @@ import javax.inject.Singleton
 
 @Singleton
 class GarminSwimRepository @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val garminService: GarminService,
     private val sessionManager: GarminSessionManager,
     private val userPreferences: UserPreferences
@@ -28,6 +42,7 @@ class GarminSwimRepository @Inject constructor(
         private const val ACTIVITY_TYPE_SWIMMING = "swimming"
         private const val ACTIVITY_TYPE_LAP_SWIMMING = "lap_swimming"
         private const val DATE_FORMAT = "yyyy-MM-dd HH:mm:ss"
+        private const val CACHE_FILE_NAME = "swim_activities_cache.json"
     }
 
     // Simple in-memory cache
@@ -35,7 +50,79 @@ class GarminSwimRepository @Inject constructor(
     private val loadedYears = mutableSetOf<Int>()
     private val dateFormatter = DateTimeFormatter.ofPattern(DATE_FORMAT)
 
+    private var isCacheLoaded = false
+    private val cacheMutex = Mutex()
+
+    private val gson: Gson = GsonBuilder()
+        .registerTypeAdapter(LocalDateTime::class.java, object : TypeAdapter<LocalDateTime>() {
+            override fun write(out: JsonWriter, value: LocalDateTime?) {
+                if (value == null) {
+                    out.nullValue()
+                } else {
+                    out.value(value.format(dateFormatter))
+                }
+            }
+
+            override fun read(input: JsonReader): LocalDateTime? {
+                if (input.peek() == com.google.gson.stream.JsonToken.NULL) {
+                    input.nextNull()
+                    return null
+                }
+                return LocalDateTime.parse(input.nextString(), dateFormatter)
+            }
+        })
+        .create()
+
+    private suspend fun ensureCacheLoaded() {
+        if (isCacheLoaded) return
+        cacheMutex.withLock {
+            if (isCacheLoaded) return
+            Log.d(TAG, "Attempting to load cache from disk...")
+            loadCacheFromDisk()
+            isCacheLoaded = true
+        }
+    }
+
+    private suspend fun loadCacheFromDisk() = withContext(Dispatchers.IO) {
+        val cacheFile = File(context.filesDir, CACHE_FILE_NAME)
+        if (cacheFile.exists()) {
+            try {
+                FileReader(cacheFile).use { reader ->
+                    val type = object : TypeToken<List<SwimActivity>>() {}.type
+                    val activities: List<SwimActivity>? = gson.fromJson(reader, type)
+                    if (activities != null) {
+                        cachedActivities.value = activities
+                        // Re-populate loadedYears based on loaded data
+                        val years = activities.map { it.startTime.year }.toSet()
+                        loadedYears.addAll(years)
+                        Log.d(TAG, "CACHE HIT: Loaded ${activities.size} activities from disk cache. Covered years: $years")
+                    } else {
+                        Log.w(TAG, "CACHE MISS: Cache file exists but parsed content is null")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "CACHE ERROR: Error loading cache from disk", e)
+            }
+        } else {
+             Log.d(TAG, "CACHE MISS: No cache file found at ${cacheFile.absolutePath}")
+        }
+    }
+
+    private suspend fun saveCacheToDisk(activities: List<SwimActivity>) = withContext(Dispatchers.IO) {
+        val cacheFile = File(context.filesDir, CACHE_FILE_NAME)
+        try {
+            FileWriter(cacheFile).use { writer ->
+                gson.toJson(activities, writer)
+            }
+            Log.d(TAG, "CACHE WRITE: Saved ${activities.size} activities to disk cache at ${cacheFile.absolutePath}")
+        } catch (e: Exception) {
+            Log.e(TAG, "CACHE ERROR: Error saving cache to disk", e)
+        }
+    }
+
     private suspend fun ensureDataLoaded(year: Int = LocalDate.now().year, forceRefresh: Boolean = false) = withContext(Dispatchers.IO) {
+        ensureCacheLoaded()
+
         if (!sessionManager.hasSession()) {
             val success = autoLogin()
             if (!success) {
@@ -46,11 +133,14 @@ class GarminSwimRepository @Inject constructor(
         
         // Avoid re-fetching if we have data for this year
         if (!forceRefresh && loadedYears.contains(year)) {
+             Log.d(TAG, "CACHE HIT: Data for year $year already loaded in memory (or from disk). Skipping fetch.")
              return@withContext
         }
 
+        Log.d(TAG, "NETWORK FETCH: Starting fetch for year $year (forceRefresh=$forceRefresh)...")
         try {
             val token = sessionManager.getCsrfToken()
+
             
             val response = garminService.getActivities(
                 csrfToken = token,
@@ -77,6 +167,9 @@ class GarminSwimRepository @Inject constructor(
                 
                 cachedActivities.value = merged
                 loadedYears.add(year)
+                
+                // Save updated cache to disk
+                saveCacheToDisk(merged)
             } else {
                 Log.e(TAG, "Failed to fetch activities: ${response.code()}")
                 Log.e(TAG, "Error body: ${response.errorBody()?.string()}")
@@ -556,10 +649,12 @@ class GarminSwimRepository @Inject constructor(
                              pacePoints.add(MetricPoint(cumDuration, 100.0 / lap.averageSpeed))
                         }
                         
+                        // HR
                         if (lap.averageHR != null && lap.averageHR > 0) {
                             hrPoints.add(MetricPoint(cumDuration, lap.averageHR))
                         }
                         
+                        // Swolf
                         if (lap.averageSwolf != null && lap.averageSwolf > 0) {
                              swolfPoints.add(MetricPoint(cumDuration, lap.averageSwolf))
                         }
