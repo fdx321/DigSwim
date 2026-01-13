@@ -350,231 +350,225 @@ class GarminSwimRepository @Inject constructor(
         emit(emptyList()) // Placeholder
     }
 
-    override fun getActivitiesForWeek(weekStart: LocalDate): Flow<List<SwimActivity>> = flow {
-        ensureDataLoaded(weekStart.year)
-        val activities = cachedActivities.value
-        val weekEnd = weekStart.plusDays(6)
-        
-        val weeklyActivities = activities.filter { 
-            val date = it.startTime.toLocalDate()
-            !date.isBefore(weekStart) && !date.isAfter(weekEnd)
-        }.sortedByDescending { it.startTime }
-        
-        emit(weeklyActivities)
-    }
-
-    override fun getWeeklySummary(weekStart: LocalDate): Flow<WeeklySummary> = flow {
-        ensureDataLoaded(weekStart.year)
-        val activities = cachedActivities.value
-        val endOfWeek = weekStart.plusDays(6)
-        
-        val weeklyActivities = activities.filter { 
-            val date = it.startTime.toLocalDate()
-            !date.isBefore(weekStart) && !date.isAfter(endOfWeek)
+    override fun getActivitiesForWeek(weekStart: LocalDate): Flow<List<SwimActivity>> = cachedActivities
+        .onStart { ensureDataLoaded(weekStart.year) }
+        .map { activities ->
+            val weekEnd = weekStart.plusDays(6)
+            activities.filter {
+                val date = it.startTime.toLocalDate()
+                !date.isBefore(weekStart) && !date.isAfter(weekEnd)
+            }.sortedByDescending { it.startTime }
         }
 
-        if (weeklyActivities.isEmpty()) {
-            // Return empty summary instead of null to match non-nullable return type
-            emit(WeeklySummary(
-                weekStart = weekStart.atStartOfDay(),
-                weekEnd = endOfWeek.atTime(23, 59, 59),
-                totalDistanceMeters = 0,
-                totalDurationSeconds = 0L,
-                swimCount = 0,
-                totalCalories = 0,
-                avgPaceSecondsPer100m = 0,
-                avgHeartRate = 0,
-                avgSwolf = 0,
-                dailyDistances = List(7) { 0 }
-            ))
-        } else {
-            // Re-calculate summary from activities
-            val totalDist = weeklyActivities.sumOf { it.distanceMeters }
-            val totalDur = weeklyActivities.sumOf { it.durationSeconds }
-            val totalCals = weeklyActivities.sumOf { it.calories }
-            val swimCount = weeklyActivities.size
+    override fun getWeeklySummary(weekStart: LocalDate): Flow<WeeklySummary> = cachedActivities
+        .onStart { ensureDataLoaded(weekStart.year) }
+        .map { activities ->
+            val endOfWeek = weekStart.plusDays(6)
             
-            // Avg Pace
-            val validPaceActivities = weeklyActivities.filter { it.avgPaceSecondsPer100m > 0 }
-            val avgPace = if (validPaceActivities.isNotEmpty()) {
-                validPaceActivities.sumOf { it.avgPaceSecondsPer100m } / validPaceActivities.size
-            } else 0
-            
-            // Avg HR
-            val validHrActivities = weeklyActivities.filter { it.avgHeartRate != null && it.avgHeartRate > 0 }
-            val avgHr = if (validHrActivities.isNotEmpty()) {
-                validHrActivities.sumOf { it.avgHeartRate!! } / validHrActivities.size
-            } else 0
-            
-            // Avg Swolf
-            val validSwolfActivities = weeklyActivities.filter { it.swolf != null && it.swolf > 0 }
-            val avgSwolf = if (validSwolfActivities.isNotEmpty()) {
-                validSwolfActivities.sumOf { it.swolf!! } / validSwolfActivities.size
-            } else 0
-            
-            // Calculate daily distances
-            val dailyDistances = IntArray(7) { 0 }
-            weeklyActivities.forEach { act ->
-                val dayIndex = act.startTime.dayOfWeek.value - 1 // Mon=0
-                if (dayIndex in 0..6) {
-                    dailyDistances[dayIndex] += act.distanceMeters
+            val weeklyActivities = activities.filter { 
+                val date = it.startTime.toLocalDate()
+                !date.isBefore(weekStart) && !date.isAfter(endOfWeek)
+            }
+
+            if (weeklyActivities.isEmpty()) {
+                // Return empty summary instead of null to match non-nullable return type
+                WeeklySummary(
+                    weekStart = weekStart.atStartOfDay(),
+                    weekEnd = endOfWeek.atTime(23, 59, 59),
+                    totalDistanceMeters = 0,
+                    totalDurationSeconds = 0L,
+                    swimCount = 0,
+                    totalCalories = 0,
+                    avgPaceSecondsPer100m = 0,
+                    avgHeartRate = 0,
+                    avgSwolf = 0,
+                    dailyDistances = List(7) { 0 }
+                )
+            } else {
+                // Re-calculate summary from activities
+                val totalDist = weeklyActivities.sumOf { it.distanceMeters }
+                val totalDur = weeklyActivities.sumOf { it.durationSeconds }
+                val totalCals = weeklyActivities.sumOf { it.calories }
+                val swimCount = weeklyActivities.size
+                
+                // Avg Pace
+                val validPaceActivities = weeklyActivities.filter { it.avgPaceSecondsPer100m > 0 }
+                val avgPace = if (validPaceActivities.isNotEmpty()) {
+                    validPaceActivities.sumOf { it.avgPaceSecondsPer100m } / validPaceActivities.size
+                } else 0
+                
+                // Avg HR
+                val validHrActivities = weeklyActivities.filter { it.avgHeartRate != null && it.avgHeartRate > 0 }
+                val avgHr = if (validHrActivities.isNotEmpty()) {
+                    validHrActivities.sumOf { it.avgHeartRate!! } / validHrActivities.size
+                } else 0
+                
+                // Avg Swolf
+                val validSwolfActivities = weeklyActivities.filter { it.swolf != null && it.swolf > 0 }
+                val avgSwolf = if (validSwolfActivities.isNotEmpty()) {
+                    validSwolfActivities.sumOf { it.swolf!! } / validSwolfActivities.size
+                } else 0
+                
+                // Calculate daily distances
+                val dailyDistances = IntArray(7) { 0 }
+                weeklyActivities.forEach { act ->
+                    val dayIndex = act.startTime.dayOfWeek.value - 1 // Mon=0
+                    if (dayIndex in 0..6) {
+                        dailyDistances[dayIndex] += act.distanceMeters
+                    }
                 }
+                
+                WeeklySummary(
+                    weekStart = weekStart.atStartOfDay(),
+                    weekEnd = endOfWeek.atTime(23, 59, 59),
+                    totalDistanceMeters = totalDist,
+                    totalDurationSeconds = totalDur,
+                    swimCount = swimCount,
+                    totalCalories = totalCals,
+                    avgPaceSecondsPer100m = avgPace,
+                    avgHeartRate = avgHr,
+                    avgSwolf = avgSwolf,
+                    dailyDistances = dailyDistances.toList()
+                )
+            }
+        }
+
+    override fun getMonthlySummary(year: Int, month: Int): Flow<MonthlySummary> = cachedActivities
+        .onStart { ensureDataLoaded(year) }
+        .map { activities ->
+            val yearMonth = YearMonth.of(year, month)
+            
+            val monthlyActivities = activities.filter { 
+                val date = it.startTime.toLocalDate()
+                YearMonth.from(date) == yearMonth
             }
             
-            emit(WeeklySummary(
-                weekStart = weekStart.atStartOfDay(),
-                weekEnd = endOfWeek.atTime(23, 59, 59),
-                totalDistanceMeters = totalDist,
-                totalDurationSeconds = totalDur,
-                swimCount = swimCount,
-                totalCalories = totalCals,
-                avgPaceSecondsPer100m = avgPace,
-                avgHeartRate = avgHr,
-                avgSwolf = avgSwolf,
-                dailyDistances = dailyDistances.toList()
-            ))
-        }
-    }
+            if (monthlyActivities.isEmpty()) {
+                MonthlySummary(
+                    year = year,
+                    month = month,
+                    totalDistanceMeters = 0,
+                    totalDurationSeconds = 0L,
+                    swimCount = 0,
+                    totalCalories = 0,
+                    avgPaceSecondsPer100m = 0,
+                    avgHeartRate = 0,
+                    avgSwolf = 0,
+                    dailyDistances = List(yearMonth.lengthOfMonth()) { 0 }
+                )
+            } else {
+                val totalDist = monthlyActivities.sumOf { it.distanceMeters }
+                val totalDur = monthlyActivities.sumOf { it.durationSeconds }
+                val totalCals = monthlyActivities.sumOf { it.calories }
+                val swimCount = monthlyActivities.size
+                
+                // Avg Pace
+                val validPaceActivities = monthlyActivities.filter { it.avgPaceSecondsPer100m > 0 }
+                val avgPace = if (validPaceActivities.isNotEmpty()) {
+                    validPaceActivities.sumOf { it.avgPaceSecondsPer100m } / validPaceActivities.size
+                } else 0
+                
+                // Avg HR
+                val validHrActivities = monthlyActivities.filter { it.avgHeartRate != null && it.avgHeartRate > 0 }
+                val avgHr = if (validHrActivities.isNotEmpty()) {
+                    validHrActivities.sumOf { it.avgHeartRate!! } / validHrActivities.size
+                } else 0
+                
+                // Avg Swolf
+                val validSwolfActivities = monthlyActivities.filter { it.swolf != null && it.swolf > 0 }
+                val avgSwolf = if (validSwolfActivities.isNotEmpty()) {
+                    validSwolfActivities.sumOf { it.swolf!! } / validSwolfActivities.size
+                } else 0
 
-    override fun getMonthlySummary(year: Int, month: Int): Flow<MonthlySummary> = flow {
-        ensureDataLoaded(year)
-        val activities = cachedActivities.value
-        val yearMonth = YearMonth.of(year, month)
-        
-        val monthlyActivities = activities.filter { 
-            val date = it.startTime.toLocalDate()
-            YearMonth.from(date) == yearMonth
-        }
-        
-        if (monthlyActivities.isEmpty()) {
-            emit(MonthlySummary(
-                year = year,
-                month = month,
-                totalDistanceMeters = 0,
-                totalDurationSeconds = 0L,
-                swimCount = 0,
-                totalCalories = 0,
-                avgPaceSecondsPer100m = 0,
-                avgHeartRate = 0,
-                avgSwolf = 0,
-                dailyDistances = List(yearMonth.lengthOfMonth()) { 0 }
-            ))
-        } else {
-            val totalDist = monthlyActivities.sumOf { it.distanceMeters }
-            val totalDur = monthlyActivities.sumOf { it.durationSeconds }
-            val totalCals = monthlyActivities.sumOf { it.calories }
-            val swimCount = monthlyActivities.size
-            
-            // Avg Pace
-            val validPaceActivities = monthlyActivities.filter { it.avgPaceSecondsPer100m > 0 }
-            val avgPace = if (validPaceActivities.isNotEmpty()) {
-                validPaceActivities.sumOf { it.avgPaceSecondsPer100m } / validPaceActivities.size
-            } else 0
-            
-            // Avg HR
-            val validHrActivities = monthlyActivities.filter { it.avgHeartRate != null && it.avgHeartRate > 0 }
-            val avgHr = if (validHrActivities.isNotEmpty()) {
-                validHrActivities.sumOf { it.avgHeartRate!! } / validHrActivities.size
-            } else 0
-            
-            // Avg Swolf
-            val validSwolfActivities = monthlyActivities.filter { it.swolf != null && it.swolf > 0 }
-            val avgSwolf = if (validSwolfActivities.isNotEmpty()) {
-                validSwolfActivities.sumOf { it.swolf!! } / validSwolfActivities.size
-            } else 0
-
-            val daysInMonth = yearMonth.lengthOfMonth()
-            val dailyDistances = IntArray(daysInMonth) { 0 }
-            monthlyActivities.forEach { act ->
-                val dayIndex = act.startTime.dayOfMonth - 1
-                if (dayIndex in 0 until daysInMonth) {
-                    dailyDistances[dayIndex] += act.distanceMeters
+                val daysInMonth = yearMonth.lengthOfMonth()
+                val dailyDistances = IntArray(daysInMonth) { 0 }
+                monthlyActivities.forEach { act ->
+                    val dayIndex = act.startTime.dayOfMonth - 1
+                    if (dayIndex in 0 until daysInMonth) {
+                        dailyDistances[dayIndex] += act.distanceMeters
+                    }
                 }
+
+                MonthlySummary(
+                    year = year,
+                    month = month,
+                    totalDistanceMeters = totalDist,
+                    totalDurationSeconds = totalDur,
+                    swimCount = swimCount,
+                    totalCalories = totalCals,
+                    avgPaceSecondsPer100m = avgPace,
+                    avgHeartRate = avgHr,
+                    avgSwolf = avgSwolf,
+                    dailyDistances = dailyDistances.toList()
+                )
             }
-
-            emit(MonthlySummary(
-                year = year,
-                month = month,
-                totalDistanceMeters = totalDist,
-                totalDurationSeconds = totalDur,
-                swimCount = swimCount,
-                totalCalories = totalCals,
-                avgPaceSecondsPer100m = avgPace,
-                avgHeartRate = avgHr,
-                avgSwolf = avgSwolf,
-                dailyDistances = dailyDistances.toList()
-            ))
         }
-    }
 
-    override fun getYearlySummary(year: Int): Flow<YearlySummary> = flow {
-        ensureDataLoaded(year)
-        val activities = cachedActivities.value
-        
-        val yearlyActivities = activities.filter { 
-            it.startTime.year == year
-        }
-        
-        if (yearlyActivities.isEmpty()) {
-            emit(YearlySummary(
-                year = year,
-                totalDistanceMeters = 0,
-                totalDurationSeconds = 0L,
-                swimCount = 0,
-                totalCalories = 0,
-                avgPaceSecondsPer100m = 0,
-                avgHeartRate = 0,
-                avgSwolf = 0,
-                monthlyDistances = List(12) { 0 }
-            ))
-        } else {
-             val totalDist = yearlyActivities.sumOf { it.distanceMeters }
-            val totalDur = yearlyActivities.sumOf { it.durationSeconds }
-            val totalCals = yearlyActivities.sumOf { it.calories }
-            val swimCount = yearlyActivities.size
-            
-            // Avg Pace
-            val validPaceActivities = yearlyActivities.filter { it.avgPaceSecondsPer100m > 0 }
-            val avgPace = if (validPaceActivities.isNotEmpty()) {
-                validPaceActivities.sumOf { it.avgPaceSecondsPer100m } / validPaceActivities.size
-            } else 0
-            
-            // Avg HR
-            val validHrActivities = yearlyActivities.filter { it.avgHeartRate != null && it.avgHeartRate > 0 }
-            val avgHr = if (validHrActivities.isNotEmpty()) {
-                validHrActivities.sumOf { it.avgHeartRate!! } / validHrActivities.size
-            } else 0
-            
-            // Avg Swolf
-            val validSwolfActivities = yearlyActivities.filter { it.swolf != null && it.swolf > 0 }
-            val avgSwolf = if (validSwolfActivities.isNotEmpty()) {
-                validSwolfActivities.sumOf { it.swolf!! } / validSwolfActivities.size
-            } else 0
-            
-            val monthlyDistances = IntArray(12) { 0 }
-            yearlyActivities.forEach { act ->
-                val monthIndex = act.startTime.monthValue - 1
-                monthlyDistances[monthIndex] += act.distanceMeters
+    override fun getYearlySummary(year: Int): Flow<YearlySummary> = cachedActivities
+        .onStart { ensureDataLoaded(year) }
+        .map { activities ->
+            val yearlyActivities = activities.filter { 
+                it.startTime.year == year
             }
             
-            emit(YearlySummary(
-                year = year,
-                totalDistanceMeters = totalDist,
-                totalDurationSeconds = totalDur,
-                swimCount = swimCount,
-                totalCalories = totalCals,
-                avgPaceSecondsPer100m = avgPace,
-                avgHeartRate = avgHr,
-                avgSwolf = avgSwolf,
-                monthlyDistances = monthlyDistances.toList()
-            ))
+            if (yearlyActivities.isEmpty()) {
+                YearlySummary(
+                    year = year,
+                    totalDistanceMeters = 0,
+                    totalDurationSeconds = 0L,
+                    swimCount = 0,
+                    totalCalories = 0,
+                    avgPaceSecondsPer100m = 0,
+                    avgHeartRate = 0,
+                    avgSwolf = 0,
+                    monthlyDistances = List(12) { 0 }
+                )
+            } else {
+                 val totalDist = yearlyActivities.sumOf { it.distanceMeters }
+                val totalDur = yearlyActivities.sumOf { it.durationSeconds }
+                val totalCals = yearlyActivities.sumOf { it.calories }
+                val swimCount = yearlyActivities.size
+                
+                // Avg Pace
+                val validPaceActivities = yearlyActivities.filter { it.avgPaceSecondsPer100m > 0 }
+                val avgPace = if (validPaceActivities.isNotEmpty()) {
+                    validPaceActivities.sumOf { it.avgPaceSecondsPer100m } / validPaceActivities.size
+                } else 0
+                
+                // Avg HR
+                val validHrActivities = yearlyActivities.filter { it.avgHeartRate != null && it.avgHeartRate > 0 }
+                val avgHr = if (validHrActivities.isNotEmpty()) {
+                    validHrActivities.sumOf { it.avgHeartRate!! } / validHrActivities.size
+                } else 0
+                
+                // Avg Swolf
+                val validSwolfActivities = yearlyActivities.filter { it.swolf != null && it.swolf > 0 }
+                val avgSwolf = if (validSwolfActivities.isNotEmpty()) {
+                    validSwolfActivities.sumOf { it.swolf!! } / validSwolfActivities.size
+                } else 0
+                
+                val monthlyDistances = IntArray(12) { 0 }
+                yearlyActivities.forEach { act ->
+                    val monthIndex = act.startTime.monthValue - 1
+                    monthlyDistances[monthIndex] += act.distanceMeters
+                }
+                
+                YearlySummary(
+                    year = year,
+                    totalDistanceMeters = totalDist,
+                    totalDurationSeconds = totalDur,
+                    swimCount = swimCount,
+                    totalCalories = totalCals,
+                    avgPaceSecondsPer100m = avgPace,
+                    avgHeartRate = avgHr,
+                    avgSwolf = avgSwolf,
+                    monthlyDistances = monthlyDistances.toList()
+                )
+            }
         }
-    }
 
-    override fun getAllActivities(): Flow<List<SwimActivity>> = flow {
-        ensureDataLoaded() // Default to current year
-        emitAll(cachedActivities)
-    }
+    override fun getAllActivities(): Flow<List<SwimActivity>> = cachedActivities
+        .onStart { ensureDataLoaded() }
 
     override suspend fun getActivityDetail(activityId: String): SwimActivityDetail? = withContext(Dispatchers.IO) {
         // 1. Find summary in cache first
